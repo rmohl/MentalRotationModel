@@ -22,27 +22,6 @@ def greatest_landmark_distance(landmarks1, landmarks2):
 
     return greatest_distance
 
-def find_center_point_LWLC(object):                      # length weighted line centroid method
-
-    top_sum = 0
-    bottom_sum = 0
-    endpoints = object.get_endpoints()
-
-    for index in range(len(endpoints) - 1):
-
-        # get geon length
-        curr_geon_length = object.geons[index].length
-
-        # get geon midpoint
-        start = endpoints[index]
-        end = endpoints[index + 1]
-        curr_midpoint = (start + end) / 2
-
-        top_sum += curr_geon_length * curr_midpoint
-        bottom_sum += curr_geon_length
-
-    return top_sum/bottom_sum
-
 # ROTATION
 
 def make_matrix_representation(v1, v2):
@@ -56,45 +35,153 @@ def make_matrix_representation(v1, v2):
     
     return np.column_stack([u1, u2, u3])
 
-def human_perceived_distance_shepard_metzler(
-    dx, dy, dz,
-    *,
+def align_rotation_points(original_object, target_object, center_coords):
+
+    # 1. Get object rotation points
+
+    rotation_point_original = original_object.get_landmark_spatial_connection().get_start_point()           # point where geon vector and spatial connection vector intersect!
+    rotation_point_target = target_object.get_landmark_spatial_connection().get_start_point()
+
+    # 2. Align object rotation points
+
+    # find distance from center point to rotation point
+    original_shift = center_coords - rotation_point_original
+    target_shift = center_coords - rotation_point_target
+
+    # move objects so they are aligned (changed so rotation point is origin)
+    original_object.update_start_coords(original_object.start_coords + original_shift)
+    target_object.update_start_coords(target_object.start_coords + target_shift)
+
+def add_error(
+    input_vector,
     # axis gains (defaults suit line-drawing stimuli with weak depth cues)
-    gx=1.00,          # lateral (x)
-    gy=1.08,          # vertical (y) ~8% overestimation
-    # depth gain is interpolated from cue strength below
-    cue_strength=0.3, # 0=very weak depth cues (typical S–M drawings), 1=rich cues
-    gz_weak=0.70,     # depth compression when cues are weak
-    gz_rich=0.95,     # depth compression when cues are rich
-    # psychophysical shape
-    beta=1.0,         # Stevens exponent (≈1 for length)
-    p=2.0             # Minkowski pooling order (2 = Euclidean)
+    gx=1.02,          # lateral (x)
+    gy=1.01,          # vertical (y)
+    gz=0.98
 ):
     """
-    Returns (per_axis, total):
+    Returns (per_axis):
       per_axis = np.array([Px, Py, Pz]) perceived magnitudes along x,y,z
-      total    = pooled perceived 3D distance
 
     Notes:
       - Set cue_strength∈[0,1]. For classic Shepard–Metzler drawings, try 0–0.3.
       - Increase gy if verticals look even longer in your render; increase gz_weak
         (toward 1.0) if your stimuli carry stronger depth cues.
     """
-    # interpolate depth gain based on cue strength
-    gz = gz_weak + (gz_rich - gz_weak) * np.clip(cue_strength, 0.0, 1.0)
+    dx = input_vector[0]
+    dy = input_vector[1]            # y and z are switched in graphing
+    dz = input_vector[2]
 
     # per-axis perceived magnitudes (near-linear)
-    ax = gx * (abs(dx) ** beta)
-    ay = gy * (abs(dy) ** beta)
-    az = gz * (abs(dz) ** beta)
+    ax = gx * (dx)                # note w/ multiplication, cardinal axes are not affected!
+    ay = gy * (dy)
+    az = gz * (dz)
 
-    if np.isinf(p):
-        total = max(ax, ay, az)
-    else:
-        total = (ax**p + ay**p + az**p) ** (1.0 / p)
+    return np.array([ax, ay, az])
 
-    return np.array([ax, ay, az]), total
 
+def find_axis_of_rotation_geon_only(original_object, target_object, center_coords=np.array([0, 0, 0]), prev_axis=None, step_size=10, prev_direction=1, prev_angle=None, total_angular_disparity=None):
+
+    smoothness = 0.5
+
+    # 1. Align original and target object's rotation points
+
+    align_rotation_points(original_object, target_object, center_coords)
+
+    # 2. Determine axis of rotation needed to align geons
+
+    # get geon vectors
+    original_geon_direction = normalize(-original_object.get_landmark_geon().get_vector())   # negated cause its pointing towards the rotation point, we want it to point away
+    target_geon_direction = normalize(-target_object.get_landmark_geon().get_vector())
+
+    # add error on first axis calculation
+    if prev_angle is None and total_angular_disparity is None:
+        original_geon_direction = add_error(original_geon_direction)
+
+    # calculate exact axis of rotation using cross product
+    axis_vector = np.cross(original_geon_direction, target_geon_direction)
+
+    # check if direction changed from previous step (and swap if it did!)
+    if prev_axis is not None:
+        if np.dot(axis_vector, prev_axis) < 0:
+            axis_vector = -axis_vector
+
+    # the axis of rotation should NOT change too much
+    if prev_axis is not None:
+        axis_vector = normalize(smoothness * prev_axis + (1-smoothness) * axis_vector)
+
+    # 3. Determine angle and direction of rotation
+
+    theta = np.arctan2(np.linalg.norm(axis_vector), np.dot(original_geon_direction, target_geon_direction))
+    angle = theta
+    direction = np.sign(theta)
+
+    return axis_vector, direction, np.rad2deg(angle)
+
+def find_axis_of_rotation_geon_and_spatcon(original_object, target_object, center_coords=np.array([0, 0, 0]), step_size=10, prev_axis=None, prev_direction=1, prev_angle=None, total_angular_disparity=None):
+
+    smoothness = 0.5
+
+    # 1. Align original and target object's rotation points
+    
+    align_rotation_points(original_object, target_object, center_coords)
+
+    # 2. Determine axis of rotation
+
+    # get geon vectors
+    original_geon_direction = normalize(-original_object.get_landmark_geon().get_vector())   # negated cause its pointing towards the rotation point, we want it to point away
+    target_geon_direction = normalize(-target_object.get_landmark_geon().get_vector())
+
+    # get spatial connection vectors
+    original_spatcon_direction = normalize(original_object.get_landmark_spatial_connection().get_vector())
+    target_spatcon_direction = normalize(target_object.get_landmark_spatial_connection().get_vector())
+
+    # add error on first axis calculation
+    if prev_angle is None and total_angular_disparity is None:
+        original_geon_direction = add_error(original_geon_direction)
+        original_spatcon_direction = add_error(original_spatcon_direction)
+
+    # make matrix representations
+    original_matrix = make_matrix_representation(original_geon_direction, original_spatcon_direction)
+    target_matrix = make_matrix_representation(target_geon_direction, target_spatcon_direction)
+
+    # calculate rotation matrix
+    R = target_matrix @ original_matrix.T
+
+    # calculation axis of rotation using eigenvector
+    vals, vecs = np.linalg.eig(R)
+    idx = np.argmin(np.abs(vals - 1.0))
+    axis_vector = normalize(np.real(vecs[:, idx]))     
+
+    # check if direction changed (and swap if it did!)
+    if prev_axis is not None:
+        if np.dot(axis_vector, prev_axis) < 0:
+            axis_vector = -axis_vector
+
+    # the axis of rotation should NOT change too much
+    if prev_axis is not None:
+        axis_vector = normalize(smoothness * prev_axis + (1-smoothness) * axis_vector)
+
+    # 4. Determine direction of rotation
+
+    # Angle in [0, pi]
+    tr = np.trace(R)
+    c = np.clip((tr - 1.0) / 2.0, -1.0, 1.0)
+    theta = float(np.arccos(c))
+
+    angle = theta
+    direction = np.sign(theta)
+
+    # print("prev_angle: " + str(prev_angle))
+    # print("theta: " + str(theta))
+    # print(switch_direction)
+
+    # if prev_angle != None and not switch_direction and prev_angle < theta:
+    #     print("NOOOO")
+    #     axis_vector = -axis_vector
+    #     switch_direction = True
+
+    return axis_vector, direction, np.rad2deg(angle)
 
 def find_axis_of_rotation(original_object, target_object, center_coords=np.array([0, 0, 0]), step_size=10, prev_axis=None, prev_direction=1, prev_angle=None, total_angular_disparity=None):
 
@@ -128,29 +215,13 @@ def find_axis_of_rotation(original_object, target_object, center_coords=np.array
 
     # PERCIEVED DISTANCE 
 
-    # add n error to x,y, and z axis for each vector
-    # x,y axes will have + error, z axis will have - error
-
-    # if prev_angle is not None and total_angular_disparity is not None:
-    if prev_angle is not None and total_angular_disparity is not None and step_size < 30:
-        added_x = prev_angle/total_angular_disparity
-        added_y = prev_angle/total_angular_disparity
-        added_z = prev_angle/total_angular_disparity 
-    else:
-        added_x = 1
-        added_y = 1
-        added_z = 1
-    
-    x_error = 1 + (0.2 * added_x)
-    y_error = 1 + (0.1 * added_y)
-    z_error = 1 + (-0.7 * added_z)
-
-    original_geon_direction_w_error = [original_geon_direction[0] * x_error, original_geon_direction[1] * z_error, original_geon_direction[2] * y_error]
-    original_spatcon_direction_w_error = [original_spatcon_direction[0] * x_error, original_spatcon_direction[1] * z_error, original_spatcon_direction[2] * y_error]
+    # add error on first axis calculation
+    if prev_angle is None and total_angular_disparity is None:
+        original_geon_direction = add_error(original_geon_direction)
+        original_spatcon_direction = add_error(original_spatcon_direction)
 
     # make matrix representations
-    original_matrix = make_matrix_representation(original_geon_direction_w_error, original_spatcon_direction_w_error)
-    # original_matrix = make_matrix_representation(original_geon_direction, original_spatcon_direction)
+    original_matrix = make_matrix_representation(original_geon_direction, original_spatcon_direction)
     target_matrix = make_matrix_representation(target_geon_direction, target_spatcon_direction)
 
     # calculate rotation matrix
@@ -179,10 +250,10 @@ def find_axis_of_rotation(original_object, target_object, center_coords=np.array
     c = np.clip((tr - 1.0) / 2.0, -1.0, 1.0)
     theta = float(np.arccos(c))
 
-    angles = theta
+    angle = theta
     rotation = np.sign(theta)
 
-    return axis_vector, rotation, angles
+    return axis_vector, rotation, np.rad2deg(angle)
 
 # SIMILARITY CHECK
 
@@ -212,3 +283,19 @@ def same_object(original_object, target_object, object_angle_threshold, total_an
 
     # if no issues found 
     return True, run_time
+
+def set_closest_cardinal_axis(axis_vector):
+
+    # only base axes ort simple combinations allowed too? maybe depends on person..
+    # try only base ones first
+
+    axis_vector_abs = np.abs(axis_vector)
+
+    max_val_pos = np.argmax(axis_vector_abs)
+
+    direction = np.sign(axis_vector)[max_val_pos]
+
+    new_axis_vector = np.zeros(3)
+    new_axis_vector[max_val_pos] = 1 * direction
+
+    return new_axis_vector

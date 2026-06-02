@@ -130,3 +130,74 @@ class Object:
     
     def get_landmark_spatial_connection(self):
         return self.geons[self.landmark_geon_index].spatial_connections[0]
+
+'''
+OTHER REPRESENTATION FUNCTIONS
+'''
+
+# x: right is positive, y: further away is positive, z: up is positive
+vector_dict = {
+    "U": np.array([0, 0, 1]),
+    "D": np.array([0, 0, -1]),
+    "L": np.array([-1, 0, 0]),
+    "R": np.array([1, 0, 0]),
+    "B": np.array([0, 1, 0]),
+    "F": np.array([0, -1, 0])
+}
+
+def find_center_point_LWLC(object):                      # length weighted line centroid method
+
+    top_sum = 0
+    bottom_sum = 0
+    endpoints = object.get_endpoints()
+
+    for index in range(len(endpoints) - 1):
+
+        # get geon length
+        curr_geon_length = object.geons[index].length
+
+        # get geon midpoint
+        start = endpoints[index]
+        end = endpoints[index + 1]
+        curr_midpoint = (start + end) / 2
+
+        top_sum += curr_geon_length * curr_midpoint
+        bottom_sum += curr_geon_length
+
+    return top_sum/bottom_sum
+
+def center_to_origin(object):
+
+    origin = np.array([0, 0, 0])
+    center_point = find_center_point_LWLC(object)
+
+    # find distance from center point to origin
+    shift = origin - center_point
+
+    # move object so center point is at origin)
+    object.update_start_coords(object.start_coords + shift)
+
+def load_objects(filename):
+    objects = []
+    with open(filename, "r") as file:
+
+        for line in file:                           # each line is an object!
+            geon_vectors = []
+            geons = line.strip().split(",")
+
+            for geon in geons:
+                geon_stats = geon.strip().split(" ")
+                direction = vector_dict[geon_stats[0]]
+                length = int(geon_stats[1])
+                geon_vectors.append(RectangularPrism(length, direction))
+
+            # create original object and relations
+            objects.append(Object(
+                geons = geon_vectors,
+                landmark_geon_index = 0                    # always make landmark index the first geon
+            ))
+
+            # make center of the object the origin (useful for rotation purposes)
+            center_to_origin(objects[-1])
+
+    return objects
