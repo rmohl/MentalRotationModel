@@ -75,7 +75,7 @@ class Object:
             geon.set_endpoints(new_coords)
             new_coords = geon.end_coords.copy()
 
-        # set geon s[atial connections]
+        # set geon spatial connections]
         # clear existing spatial connections
         for geon in self.geons:
             geon.reset_spatial_connections()
@@ -105,6 +105,15 @@ class Object:
 
         # update start coords
         self.update_start_coords(r.apply(self.start_coords))
+
+
+    def flip_last_geon(self):
+        
+        # flip direction of last geon
+        self.geons[-1].direction = -1 * self.geons[-1].direction
+
+        # update geon endpoints
+        self.set_endpoints()
 
 
     def get_endpoints(self):
@@ -137,12 +146,12 @@ OTHER REPRESENTATION FUNCTIONS
 
 # x: right is positive, y: further away is positive, z: up is positive
 vector_dict = {
-    "U": np.array([0, 0, 1]),
-    "D": np.array([0, 0, -1]),
+    "U": np.array([0, 1, 0]),
+    "D": np.array([0, -1, 0]),
     "L": np.array([-1, 0, 0]),
     "R": np.array([1, 0, 0]),
-    "B": np.array([0, 1, 0]),
-    "F": np.array([0, -1, 0])
+    "B": np.array([0, 0, 1]),
+    "F": np.array([0, 0, -1])
 }
 
 def find_center_point_LWLC(object):                      # length weighted line centroid method

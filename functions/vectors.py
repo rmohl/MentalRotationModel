@@ -24,6 +24,21 @@ def greatest_landmark_distance(landmarks1, landmarks2):
 
 # ROTATION
 
+def calculate_axis_difficulty(axis):
+    axis = np.asarray(axis, dtype=float)
+    axis = axis / np.linalg.norm(axis)
+
+    # cardinal axis closeness, ignoring sign
+    max_abs_component = np.max(np.abs(axis))
+
+    # angle to nearest cardinal axis
+    angle = np.arccos(np.clip(max_abs_component, -1, 1))
+
+    # max possible angle is angle from [1,1,1] to any cardinal axis
+    max_angle = np.arccos(1 / np.sqrt(3))
+
+    return angle / max_angle
+
 def make_matrix_representation(v1, v2):
     
     u1 = normalize(v1)
@@ -53,31 +68,23 @@ def align_rotation_points(original_object, target_object, center_coords):
     target_object.update_start_coords(target_object.start_coords + target_shift)
 
 def add_error(
-    input_vector,
-    # axis gains (defaults suit line-drawing stimuli with weak depth cues)
-    gx=1.02,          # lateral (x)
-    gy=1.01,          # vertical (y)
-    gz=0.98
+    axis,
+    x_max_error=0.04,
+    y_max_error=0.02,
+    z_max_error=-0.08
 ):
-    """
-    Returns (per_axis):
-      per_axis = np.array([Px, Py, Pz]) perceived magnitudes along x,y,z
-
-    Notes:
-      - Set cue_strength∈[0,1]. For classic Shepard–Metzler drawings, try 0–0.3.
-      - Increase gy if verticals look even longer in your render; increase gz_weak
-        (toward 1.0) if your stimuli carry stronger depth cues.
-    """
-    dx = input_vector[0]
-    dy = input_vector[1]            # y and z are switched in graphing
-    dz = input_vector[2]
+    # around 10% max error, error % maxes out as axis difficulty increases.
+    axis_difficulty = calculate_axis_difficulty(axis)
+    x_old = axis[0]
+    y_old = axis[1]
+    z_old = axis[2]
 
     # per-axis perceived magnitudes (near-linear)
-    ax = gx * (dx)                # note w/ multiplication, cardinal axes are not affected!
-    ay = gy * (dy)
-    az = gz * (dz)
+    x_new = x_old + (axis_difficulty * x_max_error * x_old)
+    y_new = y_old + (axis_difficulty * y_max_error * y_old)
+    z_new = z_old + (axis_difficulty * z_max_error * z_old)
 
-    return np.array([ax, ay, az])
+    return np.array([x_new, y_new, z_new])
 
 
 def find_axis_of_rotation_geon_only(original_object, target_object, center_coords=np.array([0, 0, 0]), prev_axis=None, step_size=10, prev_direction=1, prev_angle=None, total_angular_disparity=None):
