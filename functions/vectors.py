@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.spatial.transform import Rotation as rotate
 
 '''
 FUNCTIONS FOR VECTOR CALCULATIONS IN MODEL
@@ -28,16 +29,16 @@ def calculate_axis_difficulty(axis):
     axis = np.asarray(axis, dtype=float)
     axis = axis / np.linalg.norm(axis)
 
-    # cardinal axis closeness, ignoring sign
-    max_abs_component = np.max(np.abs(axis))
+    # get axis coefficient with greatest value
+    axis_coefficient = np.max(np.abs(axis)) 
 
-    # angle to nearest cardinal axis
-    angle = np.arccos(np.clip(max_abs_component, -1, 1))
+    # get angle to closest cardinal axis
+    angle = np.arccos(np.clip(axis_coefficient, -1, 1))
 
     # max possible angle is angle from [1,1,1] to any cardinal axis
     max_angle = np.arccos(1 / np.sqrt(3))
 
-    return angle / max_angle
+    return angle / max_angle        # return percent of max angle
 
 def make_matrix_representation(v1, v2):
     
@@ -69,25 +70,42 @@ def align_rotation_points(original_object, target_object, center_coords):
 
 def add_error(
     axis,
-    x_max_error=0.04,
-    y_max_error=0.02,
-    z_max_error=-0.08
+    x_min_error=2.0,
+    y_min_error=2.0,
+    z_min_error=5.0,
+    max_added_error = 8.0
 ):
-    # around 10% max error, error % maxes out as axis difficulty increases.
+    # return [0,0,0] axis
+    if np.array_equal(axis, np.zeros(3)):
+        return axis
+    
+    # normalize
+    axis = normalize(axis)
+
+    # 0-5 deg min error, error maxes out to 10-15 deg as axis difficulty increases
     axis_difficulty = calculate_axis_difficulty(axis)
-    x_old = axis[0]
-    y_old = axis[1]
-    z_old = axis[2]
+    total_error = (axis[0]**2 * x_min_error) + (axis[1]**2 * y_min_error) + (axis[2]**2 * z_min_error) + (max_added_error * axis_difficulty)
+    angle_error = np.clip(np.random.normal(total_error, 1), 0.0, 15.0)
 
-    # per-axis perceived magnitudes (near-linear)
-    x_new = x_old + (axis_difficulty * x_max_error * x_old)
-    y_new = y_old + (axis_difficulty * y_max_error * y_old)
-    z_new = z_old + (axis_difficulty * z_max_error * z_old)
+    # get random direction perpendicular to axis
+    rng = np.random.default_rng()
+    random_direction = rng.normal(size=3)
+    perpendicular_direction = random_direction - np.dot(random_direction, axis) * axis
 
-    return np.array([x_new, y_new, z_new])
+    # so direction vec isnt too small
+    while np.linalg.norm(perpendicular_direction) < 1e-12:
+        random_direction = rng.normal(size=3)
+        perpendicular_direction = random_direction - np.dot(random_direction, axis) * axis
+
+    # apply angle error
+    perpendicular_direction = normalize(perpendicular_direction)
+    angle_rad = np.deg2rad(angle_error)
+    new_axis = np.cos(angle_rad) * axis + np.sin(angle_rad) * perpendicular_direction
+
+    return new_axis
 
 
-def find_axis_of_rotation_geon_only(original_object, target_object, center_coords=np.array([0, 0, 0]), prev_axis=None, step_size=10, prev_direction=1, prev_angle=None, total_angular_disparity=None):
+def find_axis_of_rotation_geon_only(original_object, target_object, center_coords=np.array([0, 0, 0]), prev_axis=None, prev_angle=None, total_angular_disparity=None):
 
     smoothness = 0.5
 
@@ -101,12 +119,12 @@ def find_axis_of_rotation_geon_only(original_object, target_object, center_coord
     original_geon_direction = normalize(-original_object.get_landmark_geon().get_vector())   # negated cause its pointing towards the rotation point, we want it to point away
     target_geon_direction = normalize(-target_object.get_landmark_geon().get_vector())
 
-    # add error on first axis calculation
-    if prev_angle is None and total_angular_disparity is None:
-        original_geon_direction = add_error(original_geon_direction)
-
     # calculate exact axis of rotation using cross product
     axis_vector = np.cross(original_geon_direction, target_geon_direction)
+
+    # add error on first axis calculation
+    if prev_angle is None and total_angular_disparity is None:
+        axis_vector = add_error(axis_vector)
 
     # check if direction changed from previous step (and swap if it did!)
     if prev_axis is not None:
@@ -118,14 +136,13 @@ def find_axis_of_rotation_geon_only(original_object, target_object, center_coord
         axis_vector = normalize(smoothness * prev_axis + (1-smoothness) * axis_vector)
 
     # 3. Determine angle and direction of rotation
-
     theta = np.arctan2(np.linalg.norm(axis_vector), np.dot(original_geon_direction, target_geon_direction))
     angle = theta
     direction = np.sign(theta)
 
     return axis_vector, direction, np.rad2deg(angle)
 
-def find_axis_of_rotation_geon_and_spatcon(original_object, target_object, center_coords=np.array([0, 0, 0]), step_size=10, prev_axis=None, prev_direction=1, prev_angle=None, total_angular_disparity=None):
+def find_axis_of_rotation_geon_and_spatcon(original_object, target_object, center_coords=np.array([0, 0, 0]), prev_axis=None, prev_angle=None, total_angular_disparity=None):
 
     smoothness = 0.5
 
@@ -143,11 +160,6 @@ def find_axis_of_rotation_geon_and_spatcon(original_object, target_object, cente
     original_spatcon_direction = normalize(original_object.get_landmark_spatial_connection().get_vector())
     target_spatcon_direction = normalize(target_object.get_landmark_spatial_connection().get_vector())
 
-    # add error on first axis calculation
-    if prev_angle is None and total_angular_disparity is None:
-        original_geon_direction = add_error(original_geon_direction)
-        original_spatcon_direction = add_error(original_spatcon_direction)
-
     # make matrix representations
     original_matrix = make_matrix_representation(original_geon_direction, original_spatcon_direction)
     target_matrix = make_matrix_representation(target_geon_direction, target_spatcon_direction)
@@ -158,7 +170,11 @@ def find_axis_of_rotation_geon_and_spatcon(original_object, target_object, cente
     # calculation axis of rotation using eigenvector
     vals, vecs = np.linalg.eig(R)
     idx = np.argmin(np.abs(vals - 1.0))
-    axis_vector = normalize(np.real(vecs[:, idx]))     
+    axis_vector = normalize(np.real(vecs[:, idx]))   
+
+    # add error on first axis calculation
+    if prev_angle is None and total_angular_disparity is None:
+        axis_vector = add_error(axis_vector)  
 
     # check if direction changed (and swap if it did!)
     if prev_axis is not None:
@@ -171,22 +187,12 @@ def find_axis_of_rotation_geon_and_spatcon(original_object, target_object, cente
 
     # 4. Determine direction of rotation
 
-    # Angle in [0, pi]
     tr = np.trace(R)
     c = np.clip((tr - 1.0) / 2.0, -1.0, 1.0)
     theta = float(np.arccos(c))
 
     angle = theta
     direction = np.sign(theta)
-
-    # print("prev_angle: " + str(prev_angle))
-    # print("theta: " + str(theta))
-    # print(switch_direction)
-
-    # if prev_angle != None and not switch_direction and prev_angle < theta:
-    #     print("NOOOO")
-    #     axis_vector = -axis_vector
-    #     switch_direction = True
 
     return axis_vector, direction, np.rad2deg(angle)
 
@@ -264,12 +270,13 @@ def find_axis_of_rotation(original_object, target_object, center_coords=np.array
 
 # SIMILARITY CHECK
 
-def same_object(original_object, target_object, object_angle_threshold, total_angular_disparity, production_time, propositional_difficulty_time):
+def same_object(original_object, target_object, object_angle_threshold, total_angular_disparity, production_time, propositional_difficulty_time, post_rotation_weight):
     run_time = 0
 
     # for each geon in object, check geon length and geon's spatial connections
-    for i in range(len(original_object.geons)):
-
+    # for i in range(len(original_object.geons)): 
+    for i in range(2, len(original_object.geons)):      # what happens if we skip 1st 2?
+        
         if i != original_object.landmark_geon_index:                # skip landmark geon and spatial connection
             og_geon = original_object.geons[i]
             targ_geon = target_object.geons[i]
@@ -284,7 +291,7 @@ def same_object(original_object, target_object, object_angle_threshold, total_an
             for j in range(len(og_geon.spatial_connections)):
 
                 # check if spatial connections are NOT colinear
-                run_time += production_time + (propositional_difficulty_time * total_angular_disparity)
+                run_time += production_time + (post_rotation_weight * propositional_difficulty_time * total_angular_disparity)
                 if cosine_similarity(og_geon.spatial_connections[j].direction, targ_geon.spatial_connections[j].direction) < object_angle_threshold: 
                     return False, run_time
 
